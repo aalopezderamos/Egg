@@ -4,3 +4,5 @@ openpyxl
 xlrd
 openai>=0.27.0
 python-docx>=0.8.11
+numpy
+XlsxWriter>=3.0.0
