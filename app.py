@@ -22,6 +22,17 @@ st.set_page_config(
     page_title="SEB Supplier Overview", 
     layout="wide"
 )
+st.markdown(
+    """
+    <style>
+      /* override the default page background */
+      .stApp {
+        background-color: #ffffff !important;
+      }
+    </style>
+    """,
+    unsafe_allow_html=True,
+)
 
 # ==================== CONSTANTS ====================
 CONFIG = {
@@ -157,25 +168,43 @@ def load_data(file):
         return pd.DataFrame(), pd.DataFrame(), pd.DataFrame()
 
 def display_min_order_progress(supplier_df, supplier_col, supplier):
-    """Display the minimum order progress bar with green color."""
+    """Display the minimum order progress bar (40px high) with weight info, bold & centered percentage, using an image fill and lighter grey background, with black text and white accents."""
     try:
+        # Find the percentage value
         min_order_series = supplier_df[supplier_df[supplier_col] == supplier]["Minimum Order Met?"]
         if not min_order_series.empty:
             pct_str = str(min_order_series.iloc[0])
             pct = float(pct_str.strip('%'))/100 if '%' in pct_str else float(pct_str)/100
-            progress_html = f"""
-            <div style='background-color:#e0e0e0;width:300px;height:20px;border-radius:5px;margin-top:4px;'>
-              <div style='background-color:#4CAF50;width:{pct*100}%;height:100%;border-radius:5px;
-                          text-align:center;color:white;font-weight:bold;font-size:14px;line-height:20px;'>
-                {pct:.0%}
-              </div>
-            </div>
-            """
-            st.markdown(progress_html, unsafe_allow_html=True)
-            return pct
         else:
-            st.markdown("<div style='color:gray;'>No min order data</div>", unsafe_allow_html=True)
-            return 0
+            pct = 0
+
+        # Retrieve weight data if available
+        weight_series = supplier_df[supplier_df[supplier_col] == supplier][["Total Order Weight", "Minimum Order Weight"]]
+        if not weight_series.empty:
+            total = weight_series.iloc[0]["Total Order Weight"]
+            minimum = weight_series.iloc[0]["Minimum Order Weight"]
+            weight_str = f"{int(total):,}lbs/{int(minimum):,}lbs"
+        else:
+            weight_str = None
+
+        # Raw image URL for fill
+        image_url = "https://raw.githubusercontent.com/aalopezderamos/Egg/main/Beer.png"
+
+        # Build HTML with image-filled bar and centered black percentage with white glow
+        html = f"""
+        <div style='display:flex; align-items:center; margin-top:4px;'>
+          <div style='position:relative; width:300px; height:40px; background-color:#f0f0f0; border-radius:5px; overflow:hidden;'>
+            <div style='background-image:url("{image_url}"); width:{pct*100}%; height:100%; background-size:100% 100%; background-repeat:no-repeat;'></div>
+            <div style='position:absolute; top:0; left:0; width:100%; height:100%; display:flex; align-items:center; justify-content:center; font-weight:bold; font-size:14px; color:black; text-shadow:1px 1px 2px rgba(255,255,255,0.7);'>
+              {pct:.0%}
+            </div>
+          </div>"""
+        if weight_str:
+            html += f"<span style='margin-left:12px; font-weight:bold;'>{weight_str}</span>"
+        html += "</div>"
+
+        st.markdown(html, unsafe_allow_html=True)
+        return pct
     except Exception:
         st.markdown("<div style='color:gray;'>Progress unavailable</div>", unsafe_allow_html=True)
         return 0
