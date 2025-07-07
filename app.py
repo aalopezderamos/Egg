@@ -168,47 +168,58 @@ def load_data(file):
         return pd.DataFrame(), pd.DataFrame(), pd.DataFrame()
 
 def display_min_order_progress(supplier_df, supplier_col, supplier, font_size=18):
-    """Display the minimum order progress bar (40px high) with weight info,
-    a small marker at the filled position, bold & centered percentage,
-    using an image fill and lighter grey background, with black text and white accents.
+    """Display the minimum order progress using a truck graphic as the bar, filling the trailer
+    area (from X=1 to X=160 and Y=5 to Y=35) with the beer image, plus a marker and centered percentage text.
     font_size: size in pixels for the percentage text"""
     try:
-        # Find the percentage value
+        # Compute percentage
         min_order_series = supplier_df[supplier_df[supplier_col] == supplier]["Minimum Order Met?"]
+        pct = 0
         if not min_order_series.empty:
             pct_str = str(min_order_series.iloc[0])
             pct = float(pct_str.strip('%'))/100 if '%' in pct_str else float(pct_str)/100
-        else:
-            pct = 0
 
-        # Retrieve weight data if available
+        # Weight text
         weight_series = supplier_df[supplier_df[supplier_col] == supplier][["Total Order Weight", "Minimum Order Weight"]]
+        weight_str = None
         if not weight_series.empty:
             total = weight_series.iloc[0]["Total Order Weight"]
             minimum = weight_series.iloc[0]["Minimum Order Weight"]
             weight_str = f"{int(total):,}lbs/{int(minimum):,}lbs"
-        else:
-            weight_str = None
 
-        # Raw image URL for fill
-        image_url = "https://raw.githubusercontent.com/aalopezderamos/Egg/main/Beer.png"
+        # Image URLs
+        truck_url = "https://raw.githubusercontent.com/aalopezderamos/Egg/main/Truck.png"
+        beer_url  = "https://raw.githubusercontent.com/aalopezderamos/Egg/main/Beer.png"
 
-        # Build HTML with image-filled bar, centered percentage, and a marker
+        # Trailer fill parameters
+        trailer_start = 1       # px offset of trailer region start
+        trailer_width = 160     # px width corresponding to 100%
+        fill_top = 1            # px from top of truck image where trailer begins
+        fill_bottom = 35        # px from top of truck image where trailer ends
+        fill_height = fill_bottom - fill_top  # computed trailer height in px
+
+        # Compute fill width in px
+        fill_width = int(pct * trailer_width)
+
+        # Build HTML with layering and z-index
         html = f"""
-        <div style='display:flex; align-items:center; margin-top:4px;'>
-          <div style='position:relative; width:300px; height:40px; background-color:#f0f0f0; border-radius:5px; overflow:hidden;'>
-            <!-- Filled portion -->
-            <div style='background-image:url("{image_url}"); width:{pct*100}%; height:100%; background-size:100% 100%; background-repeat:no-repeat;'></div>
-            <!-- Marker line -->
-            <div style='position:absolute; top:0; left:calc({pct*100}% - 1px); width:2px; height:100%; background-color:black;'></div>
-            <!-- Percentage text -->
-            <div style='position:absolute; top:0; left:0; width:100%; height:100%; display:flex; align-items:center; justify-content:center; font-weight:bold; font-size:{font_size}px; color:black; text-shadow:1px 1px 2px rgba(255,255,255,0.7);'>
-              {pct:.0%}
-            </div>
-          </div>"""
+        <div style='position:relative; display:inline-block;'>
+          <!-- Base truck image on top layer -->
+          <img src='{truck_url}' alt='truck' style='display:block; position:relative; z-index:2;' />
+          <!-- Trailer fill container behind truck -->
+          <div style='position:absolute; top:{fill_top}px; left:{trailer_start}px; width:{fill_width}px; height:{fill_height}px; overflow:hidden; z-index:1;'>
+            <img src='{beer_url}' alt='fill' style='width:{trailer_width}px; height:{fill_height}px; object-fit:cover; display:block;' />
+          </div>
+          <!-- Marker line above fill -->
+          <div style='position:absolute; top:{fill_top}px; left:{trailer_start + fill_width}px; width:2px; height:{fill_height}px; background-color:black; z-index:3;'></div>
+          <!-- Centered percentage text on top -->
+          <div style='position:absolute; top:-10px; left:-10px; width:100%; height:100%; display:flex; align-items:center; justify-content:center; font-weight:bold; font-size:{font_size}px; color:black; text-shadow:1px 1px 2px rgba(255,255,255,0.7); z-index:4;'>
+            {pct:.0%}
+          </div>
+        </div>"""
+        # Append weight text to side
         if weight_str:
             html += f"<span style='margin-left:12px; font-weight:bold;'>{weight_str}</span>"
-        html += "</div>"
 
         st.markdown(html, unsafe_allow_html=True)
         return pct
