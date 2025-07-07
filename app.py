@@ -167,8 +167,11 @@ def load_data(file):
         st.error(f"Error loading file: {e}")
         return pd.DataFrame(), pd.DataFrame(), pd.DataFrame()
 
-def display_min_order_progress(supplier_df, supplier_col, supplier):
-    """Display the minimum order progress bar (40px high) with weight info, bold & centered percentage, using an image fill and lighter grey background, with black text and white accents."""
+def display_min_order_progress(supplier_df, supplier_col, supplier, font_size=18):
+    """Display the minimum order progress bar (40px high) with weight info,
+    a small marker at the filled position, bold & centered percentage,
+    using an image fill and lighter grey background, with black text and white accents.
+    font_size: size in pixels for the percentage text"""
     try:
         # Find the percentage value
         min_order_series = supplier_df[supplier_df[supplier_col] == supplier]["Minimum Order Met?"]
@@ -190,12 +193,16 @@ def display_min_order_progress(supplier_df, supplier_col, supplier):
         # Raw image URL for fill
         image_url = "https://raw.githubusercontent.com/aalopezderamos/Egg/main/Beer.png"
 
-        # Build HTML with image-filled bar and centered black percentage with white glow
+        # Build HTML with image-filled bar, centered percentage, and a marker
         html = f"""
         <div style='display:flex; align-items:center; margin-top:4px;'>
           <div style='position:relative; width:300px; height:40px; background-color:#f0f0f0; border-radius:5px; overflow:hidden;'>
+            <!-- Filled portion -->
             <div style='background-image:url("{image_url}"); width:{pct*100}%; height:100%; background-size:100% 100%; background-repeat:no-repeat;'></div>
-            <div style='position:absolute; top:0; left:0; width:100%; height:100%; display:flex; align-items:center; justify-content:center; font-weight:bold; font-size:14px; color:black; text-shadow:1px 1px 2px rgba(255,255,255,0.7);'>
+            <!-- Marker line -->
+            <div style='position:absolute; top:0; left:calc({pct*100}% - 1px); width:2px; height:100%; background-color:black;'></div>
+            <!-- Percentage text -->
+            <div style='position:absolute; top:0; left:0; width:100%; height:100%; display:flex; align-items:center; justify-content:center; font-weight:bold; font-size:{font_size}px; color:black; text-shadow:1px 1px 2px rgba(255,255,255,0.7);'>
               {pct:.0%}
             </div>
           </div>"""
