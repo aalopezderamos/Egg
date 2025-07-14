@@ -605,6 +605,7 @@ def _export_report_to_excel_bytes(
     overview_col: str,
     supplier_logo_urls: dict[str, str],
     supplier_manager_map: dict[str, str],
+    supplier_order_day_map: dict[str, str],  # <-- new mapping for Order Day
     po_df: pd.DataFrame,
     po_col: str,
 ) -> BytesIO:
@@ -637,7 +638,7 @@ def _export_report_to_excel_bytes(
         two_dec_fmt       = wb.add_format({"num_format": "0.00", "border": 1})
         int_fmt           = wb.add_format({"num_format": "0",    "border": 1})
         date_fmt          = wb.add_format({"num_format": "mm/dd/yyyy", "border": 1})
-        centered_wrap_fmt = wb.add_format({"align": "center", "valign": "vcenter", "text_wrap": True, "border": 1})
+        centered_wrap_fmt = wb.add_format({"align": "center", "valign": "vcenter", "text_wrap": True})
         due_fmt           = wb.add_format({"bold": True, "font_size": 18, "font_color": "#00B050"})
         hyperlink_fmt     = wb.add_format({"align": "center","font_color": "#0563C0", "underline": 1, "border": 1})
         to_order_num_fmt  = wb.add_format({"align": "center","num_format": "0", "bg_color": "#FFFF00", "border": 1})
@@ -699,11 +700,10 @@ def _export_report_to_excel_bytes(
                 except Exception as e:
                     print(f"Warning: could not load logo for {supplier}: {e}")
 
-            # 3) DUE weekday
-            next_dates = overview_df.loc[overview_df[overview_col] == supplier, "Next Delivery"]
-            if not next_dates.dropna().empty:
-                wd = pd.to_datetime(next_dates.dropna().iat[0]).strftime("%A").upper()
-                ws.write(0, 16, f"DUE {wd}", due_fmt)
+            # 3) Due date as Order Day
+            order_day = supplier_order_day_map.get(supplier, "").upper()
+            if order_day:
+                ws.write(0, 16, f"DUE {order_day}", due_fmt)
 
             # 4) Summary text
             summary_text = generate_chatgpt_summary({supplier: data})
@@ -791,16 +791,46 @@ def _export_report_to_excel_bytes(
                         else:
                             ws.write(r, c, cell)
 
-            # 6) Conditional formatting & borders
+            # ─── 6) Conditional formatting & borders ───────────────────────
             n = tbl.shape[0]
             row0, rowN = start_row, start_row + n
-            ws.conditional_format(row0+1, projected_oos_idx, rowN, projected_oos_idx, {"type":"cell","criteria":">","value":0,"format":oos_bad_fmt})
-            ws.conditional_format(row0+1, projected_oos_idx, rowN, projected_oos_idx, {"type":"cell","criteria":"==","value":0,"format":oos_good_fmt})
-            ws.conditional_format(row0, 0, rowN, len(tbl.columns)-1, {"type":"no_errors","format":thin_border_fmt})
-            ws.conditional_format(row0, 0, row0, len(tbl.columns)-1, {"type":"no_errors","format":thick_top_fmt})
-            ws.conditional_format(rowN, 0, rowN, len(tbl.columns)-1, {"type":"no_errors","format":thick_bottom_fmt})
-            ws.conditional_format(row0, 0, rowN, 0, {"type":"no_errors","format":thick_left_fmt})
-            ws.conditional_format(row0, len(tbl.columns)-1, rowN, len(tbl.columns)-1, {"type":"no_errors","format":thick_right_fmt})
+            last_col = min(len(tbl.columns) - 1, 16)
+
+            # a) OOS Risk
+            ws.conditional_format(
+                row0 + 1, projected_oos_idx, rowN, projected_oos_idx,
+                {"type": "cell", "criteria": ">", "value": 0, "format": oos_bad_fmt}
+            )
+            ws.conditional_format(
+                row0 + 1, projected_oos_idx, rowN, projected_oos_idx,
+                {"type": "cell", "criteria": "==", "value": 0, "format": oos_good_fmt}
+            )
+
+            # b) Thin grid inside table
+            ws.conditional_format(
+                row0, 0, rowN, last_col,
+                {"type": "no_errors", "format": thin_border_fmt}
+            )
+            # c) Thick top border
+            ws.conditional_format(
+                row0, 0, row0, last_col,
+                {"type": "no_errors", "format": thick_top_fmt}
+            )
+            # d) Thick bottom border
+            ws.conditional_format(
+                rowN, 0, rowN, last_col,
+                {"type": "no_errors", "format": thick_bottom_fmt}
+            )
+            # e) Thick left border
+            ws.conditional_format(
+                row0, 0, rowN, 0,
+                {"type": "no_errors", "format": thick_left_fmt}
+            )
+            # f) Thick right border at Q
+            ws.conditional_format(
+                row0, last_col, rowN, last_col,
+                {"type": "no_errors", "format": thick_right_fmt}
+            )
 
             # 7) Layout tweaks
             ws.set_row(start_row, 68 * 0.75, centered_wrap_fmt)
@@ -865,30 +895,89 @@ def generate_chatgpt_summary(supplier_data):
         "we’ve got plenty of coverage on all SKUs",
         "inventory health is spot-on with no weak points",
         "supply levels look solid and well balanced",
-        "we’re in a very comfortable inventory position"
+        "Stock levels are healthy and stable across the portfolio."
+        "We’re in a strong position from a supply standpoint."
+        "Inventory coverage is solid across all products within the portfolio.",
+        "We have ample inventory to support current and projected demand.",
+        "Inventory availability is excellent with no current areas of concern.",
+        "We're well positioned to meet any upcoming demand spikes.",
+        "All SKUs are in good shape with comfortable/solid buffer levels.",
+        "Our inventory profile is well balanced with minimal excess or shortage risk."
+
+    ]
+    inventory_mid_phrases = [
+        "Inventory position remains strong overall, with a few isolated weak spots.",
+        "Stock levels are healthy, though a couple of items are trending light on inventory.",
+        "We’re in a good place overall, with a few SKUs needing extra attention.",
+        "Overall coverage is solid, but with a few soft spots that need attention.",
+        "The inventory for the portfolio looks stable, with minor exceptions.",
+        "A few products are flirting with low coverage, but nothing critical yet.",
+        "No major concerns, but a handful of items are running a little lean.",
+        "Inventory is in good shape, though we’ve flagged some skus in the portfolio that need monitoring.",
+        "General health is good, with a couple of areas that could benefit from an order or pickup request from another wholesaler.",
+        "Supply position is strong overall, but we plan on keeping an eye on some outliers.",
+        "Coverage remains sufficient, but we’re tracking a few early-warning SKUs.",
+        "Most categories are covered, but there’s room for tightening in select items for this supplier.",
+        "No immediate risks, but a few segments are edging toward caution zones.",
+        "We're largely well-positioned, with only a couple of spots approaching the low mark.",
+
     ]
     inventory_risk_phrases = [
         "inventory levels are dipping in some areas",
         "we’re seeing tighter coverage on a few SKUs",
         "supply could tighten soon if not supplemented",
         "certain items are running lean and need watching",
-        "we’re showing early signs of strain in some lines"
+        "we’re showing early signs of strain in some lines",
+        "Inventory levels are trending downward in key areas.",
+        "We’re starting to see low coverage emerge across a few items within the portfolio.",
+        "Stock is thinning on select SKUs and may require further attention.",
+        "Some items are approaching threshold levels and need close monitoring.",
+        "Early indicators suggest potential shortages if current demand continues.",
+        "Certain SKUs are at risk of stockouts if replenishment doesn’t land soon.",
+        "Supply constraints are beginning to put pressure on inventory levels.",
+        "Lean inventory is limiting our ability to respond to fluctuations in demand.",
+        "Some SKUs might need expedited replenishment to avoid disruption.",
+        "We’re flagging a few areas for urgent restock consideration. Short-term risk exists if supply timelines shift or delay."
+       
     ]
 
     po_low_phrases = [
         "I will hold off on placing a PO since the MOQ hasn’t been reached.",
         "I’ll wait to place any PO until we hit the minimum order threshold.",
-        "I’m not placing a PO right now because MOQ isn’t met."
+        "I'm not placing a PO right now because MOQ isn’t met with current ROS/Demand.",
+        "I’ll defer the purchase order until our quantities reach the required MOQ. No PO needed this week",
+        "At the moment our volume is below the supplier’s MOQ, so I’ll pause on releasing an order and re-evaluate next week.",
+        "I’ll revisit this once our accumulated demand satisfies the minimum‑order requirement. No PO needed at this time",
+        "Since current needs fall short of the MOQ, I won’t generate a PO just yet. We will take a look again next week",
+        "We don’t hit the supplier’s minimum with today’s quantities, so I’ll wait on placing this order.",
+        "I’m holding the order until we can consolidate more units and clear the MOQ. We'll take a look at it again this week.",
+        "Let’s postpone issuing a PO until our forecasted volume meets the minimum threshold.",
+        "Because we’re under the minimum lot size, I’ll push this order to the next cycle. No PO needed this week.",
+
     ]
     po_mid_phrases = [
         "I’ll bump up the order slightly so we hit the MOQ.",
-        "I can increase the order size to satisfy the MOQ.",
-        "I’m adjusting the order to just clear the MOQ."
+        "I can increase the order size to satisfy the MOQ & get a PO placed.",
+        "I’m adjusting the order to just clear the MOQ and we can place the PO's.",
+        "I’ll increase the line‑item quantity so we comfortably reach the MOQ. We can place a PO for the below",
+        "Let me round the order up to the minimum threshold to keep it moving so we can get a PO placed.",
+        "I can pad the order a bit to satisfy the supplier’s MOQ requirement. We should be able to stretch a PO",
+        "We’re just shy of the minimum Ill work on adding a few cases will get us there.",
+        "I’m boosting the order to align with the supplier’s MOQ and avoid delays.",
+        "An adjustment to the DOH Target will allow this purchase to meet the MOQ.",
+        "I’ll expand the DOH Order Target so we achieve the required MOQ.",
+        
     ]
     po_high_phrases = [
         "I will go ahead and place the recommended PO now that MOQ is met.",
         "I’m ready to submit the PO as planned.",
-        "I’ll place the order since we’ve met the MOQ."
+        "Quantities look solid—I'll release the PO today.",
+        "Since we’ve cleared the MOQ, I’ll process this weeks order right away.",
+        "All order thresholds met; I’m issuing a PO for the below this afternoon.",
+        "The minimum order qty is satisfied, so I’ll finalize and submit the purchase order today.",
+        "MOQ achieved; I’ll move forward with the order & place the PO into the system now.",
+        "We’re at the required quantity, and I’ll dispatch the PO accordingly this afternoon for the below.",
+        "I’ll go ahead and greenlight the purchase order for the qty below.",    
     ]
 
     blocks = []
@@ -899,14 +988,20 @@ def generate_chatgpt_summary(supplier_data):
         # Pull in user notes (or empty if none)
         notes = st.session_state.get(f"{supplier}_notes", "").strip()
 
-        # Inventory health phrasing
-        health_phrase = (
-            random.choice(inventory_good_phrases)
-            if items_under_10 == 0
-            else random.choice(inventory_risk_phrases)
-        )
+        # ─── Compute total items and ratio ───────────────────────────────────
+        overview_df = st.session_state.get(f"{supplier}_overview", pd.DataFrame())
+        total_items = overview_df.shape[0]
+        ratio = (items_under_10 / total_items) if total_items > 0 else 0
 
-        # Choose a PO recommendation phrase
+        # ─── Inventory health phrasing with mid-case ────────────────────────
+        if items_under_10 == 0:
+            health_phrase = random.choice(inventory_good_phrases)
+        elif ratio < 0.25:
+            health_phrase = random.choice(inventory_mid_phrases)
+        else:
+            health_phrase = random.choice(inventory_risk_phrases)
+
+        # ─── Determine PO Recommendation ─────────────────────────────────────
         if min_order_pct < 0.75:
             po_choice = random.choice(po_low_phrases)
         elif min_order_pct < 1.0:
@@ -1006,12 +1101,19 @@ def main():
         return st.error("❌ 'Order Day' column not found in Supplier Info.")
 
     # ─── Filters ──────────────────────────────────────────────────
-    supplier_df["Order Day"] = supplier_df["Order Day"].astype(str).str.strip().str.capitalize()
+    supplier_df["Order Day"] = (
+        supplier_df["Order Day"]
+        .astype(str)
+        .str.strip()
+        .str.capitalize()
+    )
     col1, col2 = st.columns(2)
     with col1:
-        selected_day = st.selectbox("Select Order Day",
-                                    ["Any Day","Monday","Tuesday","Wednesday","Thursday","Friday"],
-                                    index=0)
+        selected_day = st.selectbox(
+            "Select Order Day",
+            ["Any Day","Monday","Tuesday","Wednesday","Thursday","Friday"],
+            index=0
+        )
     with col2:
         managers = ["All"] + sorted(supplier_df["Brand Manager"].dropna().unique())
         selected_manager = st.selectbox("Filter by Brand Manager", managers, index=0)
@@ -1024,6 +1126,14 @@ def main():
 
     if filtered.empty:
         return st.warning("No suppliers match current filters.")
+
+    # ─── Build Order Day map ───────────────────────────────────────
+    supplier_order_day_map = dict(
+        zip(
+            supplier_df[supplier_col],
+            supplier_df["Order Day"]
+        )
+    )
 
     st.subheader("Suppliers")
 
@@ -1044,7 +1154,7 @@ def main():
         if st.session_state.get("selected_suppliers", {}).get(supplier):
             st.session_state.report_data[supplier] = result
 
-    # ─── Export to PO CSV ────────────────────────────────────────
+    # ─── Export to PO CSV ───────────────────────────────────────
     display_export_section()
 
     # ─── ChatGPT Summary Button ─────────────────────────────────
@@ -1067,14 +1177,13 @@ def main():
         if not st.session_state.report_data:
             st.warning("Please select at least one supplier to export.")
         else:
-            # Build supplier → logo URL mapping
+            # Build maps
             supplier_logo_urls = dict(
                 zip(
                     supplier_df[supplier_col],
                     supplier_df.get("Logos", pd.Series()).astype(str).fillna("").tolist()
                 )
             )
-            # ─── NEW: supplier → Brand Manager mapping ─────────────────────────
             supplier_manager_map = dict(
                 zip(
                     supplier_df[supplier_col],
@@ -1082,15 +1191,16 @@ def main():
                 )
             )
 
+            # Generate Excel bytes with Order Day as DUE
             excel_bytes = _export_report_to_excel_bytes(
-                st.session_state.report_data,
-                overview_df,
-                overview_col,
-                supplier_logo_urls,
-                supplier_manager_map,    # <-- pass the new map
-                po_df,
-                po_col
-
+                st.session_state.report_data,  # supplier_data
+                overview_df,                   # overview_df
+                overview_col,                  # overview_col
+                supplier_logo_urls,            # supplier_logo_urls
+                supplier_manager_map,          # supplier_manager_map
+                supplier_order_day_map,        # supplier_order_day_map
+                po_df,                         # po_df
+                po_col                         # po_col
             )
             st.download_button(
                 label="💽 Download DSR Excel Report",
