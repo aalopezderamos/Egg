@@ -16,23 +16,8 @@ from io import BytesIO
 from xlsxwriter.utility import xl_col_to_name
 import requests
 from PIL import Image
+import requests
 
-# ==================== PAGE CONFIG ====================
-st.set_page_config(
-    page_title="SEB Supplier Overview", 
-    layout="wide"
-)
-st.markdown(
-    """
-    <style>
-      /* override the default page background */
-      .stApp {
-        background-color: #ffffff !important;
-      }
-    </style>
-    """,
-    unsafe_allow_html=True,
-)
 
 # ==================== CONSTANTS ====================
 CONFIG = {
@@ -62,6 +47,108 @@ CONFIG = {
     },
     "gpt_model": "gpt-4"
 }
+
+import streamlit as st
+# … all your other imports …
+
+# ==================== TWO-PASSWORD LOGIN ====================
+# ─── Two-password login guard ─────────────────────────────────────────────
+VALID_PASSWORDS = {"Admin", "Brand Manager"}  # ← your two secrets
+
+# initialize the flag
+if "authenticated" not in st.session_state:
+    st.session_state.authenticated = False
+
+# show login form and then halt if not yet authenticated
+if not st.session_state.authenticated:
+    st.markdown("<h1 style='text-align:center;'>🔒 Please Log In</h1>",
+                unsafe_allow_html=True)
+    password = st.text_input("Password", type="password")
+    if st.button("Log In"):
+        if password in VALID_PASSWORDS:
+            st.session_state.authenticated = True
+        else:
+            st.error("❌ Incorrect password")
+    st.stop()
+
+# ==================== PAGE CONFIG ====================
+st.set_page_config(
+    page_title="SEB MIR Overview",
+    layout="wide"
+)
+st.markdown(
+    f"""
+    <style>
+      /* 0) base background override */
+      .stApp {{
+        background-color: #ffffff !important;
+      }}
+
+      @media only screen and (orientation: portrait) {{
+        /* stack columns */
+        .stColumns {{
+          display: flex !important;
+          flex-direction: column !important;
+        }}
+        .stColumns > div {{
+          width: 100% !important;
+        }}
+
+        /* shrink stDataFrame tables */
+        .stDataFrame table {{
+          font-size: 0.8em !important;
+          transform-origin: top left;
+        }}
+        .stDataFrame th, .stDataFrame td {{
+          padding: 4px 6px !important;
+        }}
+
+        /* shrink markdown tables */
+        .stMarkdown table {{
+          font-size: 0.8em !important;
+          transform-origin: top left;
+        }}
+        .stMarkdown th, .stMarkdown td {{
+          padding: 4px 6px !important;
+        }}
+
+        /* allow horizontal scroll */
+        .stDataFrame > div, .stMarkdown table {{
+          overflow-x: auto !important;
+        }}
+      }}
+
+      /* ─── GLOBAL EXPANDER HEADER STYLES ───────────────────────────────── */
+      div[data-testid="stExpander"] > button[data-testid="stExpanderHeader"][aria-expanded] {{
+        background-color: {CONFIG['colors']['overview']} !important;
+        padding: 10px !important;
+        border-radius: 8px !important;
+        margin-bottom: 0 !important;
+        font-size: 1.25rem !important;
+        font-weight: 600 !important;
+        cursor: pointer !important;
+      }}
+
+      div[data-testid="stExpander"] > button[data-testid="stExpanderHeader"][aria-expanded] {{
+        background-color: {CONFIG['colors']['order_builder']} !important;
+      }}
+
+      div[data-testid="stExpander"] > button[data-testid="stExpanderHeader"][aria-expanded] {{
+        background-color: {CONFIG['colors']['po']} !important;
+      }}
+
+      div[data-testid="stExpander"] > button[data-testid="stExpanderHeader"][aria-expanded="true"] {{
+        background-color: inherit !important;
+      }}
+    </style>
+    """,
+    unsafe_allow_html=True,
+)
+# ─── Remote file URL ───────────────────────────────────────────────
+GITHUB_RAW_URL = (
+    "https://raw.githubusercontent.com/"
+    "aalopezderamos/MIR/main/Master%20Incoming%20Report%20NEW.xlsm"
+)
 
 # ==================== HELPER FUNCTIONS ====================
 def find_supplier_col(df: pd.DataFrame) -> str | None:
@@ -134,8 +221,22 @@ def build_export_df(data: dict) -> pd.DataFrame:
 
     return pd.DataFrame(rows, columns=CONFIG["export"]["cols"])
 
-@st.cache_data
-def load_data(file):
+@st.cache_data(hash_funcs={io.BytesIO: lambda _: None})
+def fetch_remote_file(url: str) -> io.BytesIO:
+    """
+    Download the Excel from GitHub and wrap in a BytesIO.
+    Cached so we don’t re-download on every rerun.
+    """
+    resp = requests.get(url, timeout=10)
+    resp.raise_for_status()
+    return io.BytesIO(resp.content)
+
+@st.cache_data(hash_funcs={io.BytesIO: lambda _: None})
+def load_data(file: io.BytesIO) -> tuple[pd.DataFrame, pd.DataFrame, pd.DataFrame]:
+    """
+    Load and parse the three sheets from the given Excel file.
+    Cached on the BytesIO contents so repeated runs are fast.
+    """
     try:
         supplier_df = pd.read_excel(file, sheet_name="Supplier Info")
         po_df       = pd.read_excel(file, sheet_name="PO Info")
@@ -146,11 +247,11 @@ def load_data(file):
             header=0
         )
 
-        # strip whitespace
+        # strip whitespace from all column names
         for df in (supplier_df, po_df, overview_df):
             df.columns = df.columns.str.strip()
 
-        # ── ensure Product Num is a whole number ──────────────────────────
+        # ensure “Product Num” is an integer column
         if "Product Num" in overview_df.columns:
             overview_df["Product Num"] = (
                 pd.to_numeric(overview_df["Product Num"], errors="coerce")
@@ -158,14 +259,23 @@ def load_data(file):
                   .astype("Int64")
             )
 
-        # add OOS Risk if present…
-        if len(overview_df.columns) >= 12:
+        # if there’s a 12th column, treat it as OOS Risk
+        if overview_df.shape[1] >= 12:
             overview_df["OOS Risk"] = overview_df.iloc[:, 11]
 
         return supplier_df, po_df, overview_df
+
     except Exception as e:
         st.error(f"Error loading file: {e}")
+        # on error, return three empty DataFrames so your app won’t crash
         return pd.DataFrame(), pd.DataFrame(), pd.DataFrame()
+
+@st.cache_data(hash_funcs={io.BytesIO: lambda _: None})
+def load_shortcode_data(file: io.BytesIO) -> pd.DataFrame:
+    """Load the 'Short Code Data' sheet once (cached)."""
+    df = pd.read_excel(file, sheet_name="Short Code Data")
+    df.columns = df.columns.str.strip()
+    return df
 
 def display_min_order_progress(supplier_df, supplier_col, supplier, font_size=18):
     """Display the minimum order progress using a truck graphic as the bar, filling the trailer
@@ -228,11 +338,10 @@ def display_min_order_progress(supplier_df, supplier_col, supplier, font_size=18
         return 0
 
 def display_overview_and_builder(supplier, overview_df, overview_col):
-    """Display the overview and order builder sections in a single table, with Product Num as a hyperlink,
-       and with a 1-based, un-bolded index column."""
+    """Display the overview and order builder sections in a single table, with foldable headers and styled expanders."""
     key = f"{supplier}_overview"
 
-    # ─── 1. Load or initialize session-state DataFrame ─────────────────────────
+    # 1. Load or initialize session-state DataFrame
     if key in st.session_state:
         df = st.session_state[key].copy()
     else:
@@ -246,7 +355,7 @@ def display_overview_and_builder(supplier, overview_df, overview_col):
         next_delivery = today + timedelta(days=defaults["days_to_add"])
         next_str = next_delivery.strftime("%m/%d/%Y")
 
-        # initialize builder defaults safely
+        # initialize builder defaults
         for col, default in [
             ("Target DOH", defaults["target_doh"]),
             ("Order Qty", defaults["order_qty"]),
@@ -255,339 +364,341 @@ def display_overview_and_builder(supplier, overview_df, overview_col):
             ("Next Delivery Date", next_str),
         ]:
             if col in df.columns:
-                # only replace blank strings in an existing column
                 df[col] = df[col].replace("", default)
             else:
-                # create the column filled with the default value
                 df[col] = default
 
         # convert & compute fields
         df["Next Delivery Date"] = pd.to_datetime(df["Next Delivery Date"], errors="coerce")
-        df["Delivery Date"]      = pd.to_datetime(df["Delivery Date"], errors="coerce")
-        df["Target DOH"]         = pd.to_numeric(df["Target DOH"], errors="coerce").fillna(defaults["target_doh"])
-        df["Order Qty"]          = pd.to_numeric(df["Order Qty"], errors="coerce").fillna(defaults["order_qty"])
+        df["Delivery Date"] = pd.to_datetime(df["Delivery Date"], errors="coerce")
+        df["Target DOH"] = pd.to_numeric(df["Target DOH"], errors="coerce").fillna(defaults["target_doh"])
+        df["Order Qty"] = pd.to_numeric(df["Order Qty"], errors="coerce").fillna(defaults["order_qty"])
         df = recompute_fields(df)
 
         st.session_state[key] = df.copy()
 
-    # ─── 2. Overview header ─────────────────────────────────────────────────────
-    st.markdown(
-        f"<div style='background-color:{CONFIG['colors']['overview']};"
-        "padding:10px;border-radius:8px;margin-bottom:10px;'>"
-        "<h4 style='margin:0;'>Overview</h4></div>",
-        unsafe_allow_html=True
-    )
+    # 3. Overview expander
+    with st.expander("Overview", expanded=False):
+        disp_df = st.session_state[key].reset_index(drop=True)
+        disp_df.index = disp_df.index + 1
 
-    # ─── 3. Reset index, make it 1-based, and drop old index ──────────────────
-    df = df.reset_index(drop=True)
-    df.index = df.index + 1  # make index start at 1
+        # hyperlink Product Num
+        if "Product Num" in disp_df.columns:
+            disp_df["Product Num"] = (
+                pd.to_numeric(disp_df["Product Num"], errors="coerce")
+                  .round(0)
+                  .fillna(0)
+                  .astype(int)
+                  .astype(str)
+            ).apply(lambda x: (
+                f'<a href=\"https://sbsabs.encompass8.com/Home?DashboardID=100018&ProductID={x}\" '
+                f'target=\"_blank\">{x}</a>'
+            ))
 
-    # ─── 4. Hyperlink Product Num ─────────────────────────────────────────────
-    if "Product Num" in df.columns:
-        df["Product Num"] = (
-            pd.to_numeric(df["Product Num"], errors="coerce")
-              .round(0).fillna(0).astype(int).astype(str)
-        ).apply(lambda x: (
-            f'<a href="https://sbsabs.encompass8.com/'
-            f'Home?DashboardID=100018&ProductID={x}" target="_blank">{x}</a>'
-        ))
-
-    # ─── 5. Style rules ────────────────────────────────────────────────────────
-    df["ROS"] = df["ROS"].round(1)
-    ros_min, ros_max = df["ROS"].min(), df["ROS"].max()
-    ros_range = ros_max - ros_min or 1
-    green_rgb = (99, 190, 123)
-    ros_colors = df["ROS"].apply(lambda v: (
-        f"background-color: rgb("
-        f"{int(255 - (255 - green_rgb[0]) * (v - ros_min) / ros_range)},"
-        f"{int(255 - (255 - green_rgb[1]) * (v - ros_min) / ros_range)},"
-        f"{int(255 - (255 - green_rgb[2]) * (v - ros_min) / ros_range)})"
-    ) if v > 0 else "")
-
-    def product_name_color(row):
-        doh, coh, ros = row["Days of Inventory"], row["COH"], row["ROS"]
-        if (pd.isna(ros) or ros == 0) and (pd.isna(coh) or coh == 0):
-            return "color: red"
-        if doh >= 30:
-            return "background-color: #9BC2E5"
-        if doh > 16:
-            return "background-color: #C6EFCE"
-        if doh > 10:
-            return "background-color: #FFEB9C"
-        return "background-color: #FFC7CE"
-
-    def oos_risk_color(val):
-        return "color: red" if val > 0 else "color: green"
-
-    overview_cols = ["Product Num", "Product Name", "COH", "ROS", "Days of Inventory", "OOS Risk"]
-    styled_df = (
-        df[overview_cols]
-          .style
-          .apply(lambda _: ros_colors, subset=["ROS"])
-          .apply(lambda row: [
-              product_name_color(row) if col == "Product Name" else ""
-              for col in overview_cols
-          ], axis=1)
-          .applymap(oos_risk_color, subset=["OOS Risk"])
-          .format({
-              "ROS": "{:.1f}",
-              "COH": "{:.0f}",
-              "Days of Inventory": "{:.1f}",
-              "OOS Risk": "{:.0f}"
-          })
-          # un-bold the index column
-          .set_table_styles([{
-              "selector": "th.row_heading, td.row_heading",
-              "props": [("font-weight", "normal")]
-          }])
-    )
-
-    # ─── 6. Render the table with visible 1-based index ───────────────────────
-    html = styled_df.to_html(
-        index=True,        # show our custom index
-        index_names=False, # hide the index header
-        escape=False
-    )
-    st.markdown(html, unsafe_allow_html=True)
-
-    # ─── 7. Order Builder header ─────────────────────────────────────────────
-    st.markdown(
-        f"<div style='background-color:{CONFIG['colors']['order_builder']};"
-        "padding:10px;border-radius:8px;margin-bottom:10px;'>"
-        "<div style='display:flex;justify-content:space-between;align-items:center;'>"
-        "<h4 style='margin:0;'>Order Builder</h4>"
-        "<button style='margin-left:10px;' onclick='window.location.reload()'>"
-        "Refresh Table</button></div></div>",
-        unsafe_allow_html=True
-    )
-
-    # ─── 8. Builder CSS tweaks ────────────────────────────────────────────────
-    st.markdown("""
-    <style>
-      .ag-cell { white-space: normal !important; line-height: 1.3 !important; }
-      .ag-cell[col-id="Product Name"], .ag-header-cell-label[col-id="Product Name"] {
-        white-space: nowrap !important;
-      }
-      .ag-root-wrapper { width: 100% !important; }
-      .ag-cell[col-id="To Order"], .ag-header-cell[col-id="To Order"] {
-        background-color: yellow !important;
-      }
-    </style>
-    """, unsafe_allow_html=True)
-
-    # ─── 9. Prepare and display the Order Builder editor ─────────────────────
-    builder_df = df.reset_index(drop=True).copy()
-    builder_df.index = builder_df.index + 1
-    round_cols = [
-        "Target DOH", "Days Until Next Delivery", "Projected Inventory",
-        "Target Inventory", "To Order", "Order Qty"
-    ]
-    builder_df[round_cols] = builder_df[round_cols].round(0)
-
-    builder_cols = [
-        "Product Name", "Target DOH", "Next Delivery Date",
-        "Days Until Next Delivery", "Projected Inventory",
-        "Target Inventory", "To Order", "Order Qty",
-        "PO Number", "Delivery Date"
-    ]
-    edited_df = st.data_editor(
-        builder_df[builder_cols],
-        key=f"{supplier}_builder",
-        use_container_width=True,
-        hide_index=True,  # already handling index ourselves
-        column_config={
-            "Product Name": column_config.Column(disabled=True),
-            "Target DOH": column_config.NumberColumn(min_value=0, max_value=100, step=1, format="%.0f"),
-            "Next Delivery Date": column_config.DateColumn(format="MM/DD/YYYY"),
-            "Days Until Next Delivery": column_config.NumberColumn(disabled=True, format="%.0f"),
-            "Projected Inventory": column_config.NumberColumn(disabled=True, format="%.0f"),
-            "Target Inventory": column_config.NumberColumn(disabled=True, format="%.0f"),
-            "To Order": column_config.NumberColumn(disabled=True, format="%.0f"),
-            "Order Qty": column_config.NumberColumn(format="%.0f"),
-            "PO Number": column_config.TextColumn(),
-            "Delivery Date": column_config.DateColumn(format="MM/DD/YYYY"),
-        },
-        num_rows="dynamic"
-    )
-
-    if st.button("Refresh Calculations", key=f"{supplier}_refresh"):
-        df.update(edited_df)
-        df = recompute_fields(df)
-        st.session_state[key] = df.copy()
-        st.rerun()
-
-    # ─── 10. Store for export ─────────────────────────────────────────────────
-    st.session_state.setdefault("export_data", {})[key] = df
-
-def display_po_and_shipments(supplier, po_df, po_col, overview_df, overview_col):
-    """Display POs, Shipments, and Notes for a given supplier in separate tabs."""
-    # ─── Header bar ─────────────────────────────────────────────────────────────
-    with st.container():
-        st.markdown(f"""
-            <div style='background-color:{CONFIG['colors']['po']};
-                        padding:10px;border-radius:8px;margin-bottom:10px;'>
-              <h4 style='margin:0;'>POs, Shipments & Notes</h4>
-            </div>
-        """, unsafe_allow_html=True)
-
-    # ─── Three tabs ─────────────────────────────────────────────────────────────
-    tab_po, tab_ship, tab_notes = st.tabs(["🖨️ POs", "🚚 Shipments", "🗒️ Notes"])
-
-    # ——— POs Tab ————————————————————————————————————————————————————————
-    po_count, po_numbers = 0, []
-    with tab_po:
-        mask = (
-            (po_df[po_col] == supplier)
-            & po_df["PO Num"].notna()
-            & po_df["PO Num"].astype(str).str.strip().astype(bool)
+        # style rules for ROS, Product Name, OOS Risk
+        disp_df["ROS"] = disp_df["ROS"].round(1)
+        ros_min, ros_max = disp_df["ROS"].min(), disp_df["ROS"].max()
+        ros_range = ros_max - ros_min or 1
+        green_rgb = (99, 190, 123)
+        ros_colors = disp_df["ROS"].apply(
+            lambda v: (
+                f"background-color: rgb({int(255 - (255 - green_rgb[0]) * (v - ros_min) / ros_range)},"
+                f"{int(255 - (255 - green_rgb[1]) * (v - ros_min) / ros_range)},"
+                f"{int(255 - (255 - green_rgb[2]) * (v - ros_min) / ros_range)})"
+            ) if v > 0 else ""
         )
-        supplier_pos = po_df.loc[mask]
 
-        if supplier_pos.empty:
-            st.info("No open POs for this supplier.")
-        else:
-            po_count = supplier_pos["PO Num"].nunique()
-            po_numbers = sorted(
-                supplier_pos["PO Num"]
-                    .dropna()
-                    .astype(str)
-                    .str.strip()
-                    .loc[lambda s: s != ""]
-                    .unique()
-            )
-            st.markdown(f"**{po_count} Open POs**")
+        def product_name_color(row):
+            doh, coh, ros = row["Days of Inventory"], row["COH"], row["ROS"]
+            if (pd.isna(ros) or ros == 0) and (pd.isna(coh) or coh == 0):
+                return "color: red"
+            if doh >= 30:
+                return "background-color: #9BC2E5"
+            if doh > 16:
+                return "background-color: #C6EFCE"
+            if doh > 10:
+                return "background-color: #FFEB9C"
+            return "background-color: #FFC7CE"
 
-            for po_num in po_numbers:
-                purchase_series = supplier_pos.loc[
-                    supplier_pos["PO Num"] == po_num, "Purchase ID"
-                ].dropna()
-                if not purchase_series.empty:
-                    raw_pid = purchase_series.iloc[0]
-                    pid = str(int(raw_pid)) if isinstance(raw_pid, (float, np.floating)) else str(raw_pid).strip()
-                else:
-                    pid = ""
-                link = f"https://sbsabs.encompass8.com/Home?DashboardID=168160&KeyValue={pid}"
-                st.markdown(f"[🧾 PO #{po_num}]({link})", unsafe_allow_html=True)
+        def oos_risk_color(val):
+            return "color: red" if val > 0 else "color: green"
 
-                det_cols = [c for c in ["Purchase ID", "Receive Date", "Product", "Ordered"] if c in supplier_pos.columns]
-                det = supplier_pos[supplier_pos["PO Num"] == po_num][det_cols].copy()
-                if "Receive Date" in det.columns:
-                    det["Receive Date"] = pd.to_datetime(det["Receive Date"], errors="coerce")
-                    det["Receive Date"] = det["Receive Date"].dt.strftime("%m/%d/%Y").fillna("")
-                st.dataframe(det, use_container_width=True)
+        overview_cols = ["Product Num", "Product Name", "COH", "ROS",
+                         "Days of Inventory", "OOS Risk"]
+        styled = (
+            disp_df[overview_cols]
+              .style
+              .apply(lambda _: ros_colors, subset=["ROS"])
+              .apply(lambda row: [product_name_color(row) if col == "Product Name" else "" for col in overview_cols], axis=1)
+              .applymap(oos_risk_color, subset=["OOS Risk"])
+              .format({"ROS": "{:.1f}", "COH": "{:.0f}",
+                       "Days of Inventory": "{:.1f}", "OOS Risk": "{:.0f}"})
+              .set_table_styles([
+                  {"selector": "th.row_heading, td.row_heading", "props": [("font-weight", "normal")]}
+              ])
+        )
+        html = styled.to_html(index=True, index_names=False, escape=False)
+        st.markdown(html, unsafe_allow_html=True)
 
-    # ——— Shipments Tab ——————————————————————————————————————————————————
-    with tab_ship:
-        desired = [
-            "Product Num",
-            "Product Name",
-            "First Shipment",
-            "Second Shipment",
-            "Third Shipment"
-        ]
-        cols = [c for c in desired if c in overview_df.columns]
-
-        if overview_df.empty or overview_col is None or not {"Product Num","Product Name"}.issubset(cols):
-            st.info("No shipment information available for this supplier.")
-        else:
-            ship_df = overview_df.loc[
-                overview_df[overview_col] == supplier,
-                cols
-            ].copy()
-
-            date_cols = [c for c in ["First Shipment", "Second Shipment", "Third Shipment"] if c in ship_df.columns]
-            if date_cols:
-                ship_df = ship_df.dropna(how="all", subset=date_cols)
-
-            if ship_df.empty:
-                st.info("No upcoming shipments recorded.")
-            else:
-                st.dataframe(ship_df, use_container_width=True)
-
-    # —── Notes Tab —────────────────────────────────────────────────────────────
-    with tab_notes:
+    # 5. Order Builder expander
+    with st.expander("Order Builder", expanded=False):
         st.markdown(
             """
-            <div style='background-color:#FFF8DC; padding:10px; border-radius:8px; margin-top:0;'>
-              <strong>Notes & Next Steps:</strong>
-            </div>
+            <style>
+              .ag-cell { white-space: normal !important; line-height: 1.3 !important; }
+              .ag-cell[col-id=\"Product Name\"], .ag-header-cell-label[col-id=\"Product Name\"] {
+                white-space: nowrap !important;
+              }
+              .ag-root-wrapper { width: 100% !important; }
+              .ag-cell[col-id=\"To Order\"], .ag-header-cell[col-id=\"To Order\"] {
+                background-color: yellow !important;
+              }
+            </style>
             """,
             unsafe_allow_html=True
         )
-        st.text_area(
-            label="",
-            placeholder="Type your notes here...",
-            height=150,
-            key=f"{supplier}_notes"
+
+        editor_df = disp_df.copy()
+        round_cols = ["Target DOH", "Days Until Next Delivery",
+                      "Projected Inventory", "Target Inventory",
+                      "To Order", "Order Qty"]
+        editor_df[round_cols] = editor_df[round_cols].round(0)
+
+        cols = ["Product Name", "Target DOH", "Next Delivery Date",
+                "Days Until Next Delivery", "Projected Inventory",
+                "Target Inventory", "To Order", "Order Qty",
+                "PO Number", "Delivery Date"]
+        edited = st.data_editor(
+            editor_df[cols],
+            key=f"{supplier}_builder",
+            use_container_width=True,
+            hide_index=True,
+            column_config={
+                "Product Name": column_config.Column(disabled=True),
+                "Target DOH": column_config.NumberColumn(min_value=0, max_value=100,
+                                                         step=1, format="%.0f"),
+                "Next Delivery Date": column_config.DateColumn(format="MM/DD/YYYY"),
+                "Days Until Next Delivery": column_config.NumberColumn(disabled=True, format="%.0f"),
+                "Projected Inventory": column_config.NumberColumn(disabled=True, format="%.0f"),
+                "Target Inventory": column_config.NumberColumn(disabled=True, format="%.0f"),
+                "To Order": column_config.NumberColumn(disabled=True, format="%.0f"),
+                "Order Qty": column_config.NumberColumn(format="%.0f"),
+                "PO Number": column_config.TextColumn(),
+                "Delivery Date": column_config.DateColumn(format="MM/DD/YYYY"),
+            },
+            num_rows="dynamic"
         )
 
-    # ─── Return PO info after all sections have rendered ────────────────────────
+        if st.button("Refresh Calculations", key=f"{supplier}_refresh"):
+            df.update(edited)
+            df = recompute_fields(df)
+            st.session_state[key] = df.copy()
+            st.rerun()
+
+        # Store for export
+        st.session_state.setdefault("export_data", {})[key] = df.copy()
+
+def display_po_and_shipments(supplier, po_df, po_col, overview_df, overview_col):
+    """Display POs, Shipments, and Notes for a given supplier in separate tabs, with an expander."""
+    # initialize defaults
+    po_count, po_numbers = 0, []
+
+    # Foldable section using Streamlit expander
+    with st.expander("POs, Shipments & Notes", expanded=False):
+        tab_po, tab_ship, tab_notes = st.tabs(["🖨️ POs", "🚚 Shipments", "🗒️ Notes"])
+
+        # ——— POs Tab —————————————————————————————————————————————————
+        with tab_po:
+            mask = (
+                (po_df[po_col] == supplier)
+                & po_df.get("PO Num", pd.Series()).notna()
+                & po_df["PO Num"].astype(str).str.strip().astype(bool)
+            )
+            supplier_pos = po_df.loc[mask]
+
+            if supplier_pos.empty:
+                st.info("No open POs for this supplier.")
+            else:
+                po_count = supplier_pos["PO Num"].nunique()
+                po_numbers = sorted(
+                    supplier_pos["PO Num"].dropna().astype(str).unique()
+                )
+                st.markdown(f"**{po_count} Open POs**")
+                for po_num in po_numbers:
+                    # build link to PO dashboard
+                    purchase_series = supplier_pos.loc[
+                        supplier_pos["PO Num"] == po_num, "Purchase ID"
+                    ].dropna()
+                    if not purchase_series.empty:
+                        raw_pid = purchase_series.iloc[0]
+                        pid = str(int(raw_pid)) if isinstance(raw_pid, (float, np.floating)) else str(raw_pid).strip()
+                    else:
+                        pid = ""
+                    link = (
+                        f"https://sbsabs.encompass8.com/Home?DashboardID=168160&KeyValue={pid}"
+                    )
+                    st.markdown(f"[🧾 PO #{po_num}]({link})", unsafe_allow_html=True)
+
+                    # detail table per PO
+                    det_cols = [c for c in ["Purchase ID", "Receive Date", "Product", "Ordered"]
+                                if c in supplier_pos.columns]
+                    det = supplier_pos[supplier_pos["PO Num"] == po_num][det_cols].copy()
+                    if "Receive Date" in det.columns:
+                        det["Receive Date"] = (
+                            pd.to_datetime(det["Receive Date"], errors="coerce")
+                              .dt.strftime("%m/%d/%Y").fillna("")
+                        )
+                    det = det.reset_index(drop=True)
+                    st.dataframe(det, use_container_width=True)
+
+        # ——— Shipments Tab ——————————————————————————————————————————————————
+        with tab_ship:
+            desired = ["Product Num", "Product Name", "First Shipment", "Second Shipment", "Third Shipment"]
+            cols = [c for c in desired if c in overview_df.columns]
+
+            if overview_df.empty or overview_col is None or not {"Product Num", "Product Name"}.issubset(cols):
+                st.info("No shipment information available for this supplier.")
+            else:
+                ship_df = overview_df.loc[
+                    overview_df[overview_col] == supplier,
+                    cols
+                ].copy()
+
+                date_cols = [c for c in ["First Shipment", "Second Shipment", "Third Shipment"] if c in ship_df.columns]
+                if date_cols:
+                    ship_df = ship_df.dropna(how="all", subset=date_cols)
+
+                if ship_df.empty:
+                    st.info("No upcoming shipments recorded.")
+                else:
+                    det = det.reset_index(drop=True)
+                    st.dataframe(det, use_container_width=True)
+
+        # ——— Notes Tab ——————————————————————————————————————————————————
+        with tab_notes:
+            st.markdown(
+                """
+                <div style='background-color:#FFF8DC; padding:10px; border-radius:8px;'>
+                  <strong>Notes & Next Steps:</strong>
+                </div>
+                """,
+                unsafe_allow_html=True
+            )
+            note_key = f"{supplier}_notes"
+            default_note = "Notes written here will appear on export"
+
+            # pull existing or fall back to default
+            current = st.session_state.get(note_key, "")
+            text = st.text_area(
+                label="",
+                value=current if current else default_note,
+                height=150,
+                key=note_key
+            )
+
     return po_count, po_numbers
 
+def display_shortcode(supplier: str,
+                      shortcode_df: pd.DataFrame):
+    # 1) figure out which column holds “supplier” in the shortcode sheet
+    code_sup_col = find_supplier_col(shortcode_df)
+    if not code_sup_col:
+        st.error("❌ Could not locate a 'Supplier' column in Short Code Data.")
+        return
 
-def display_supplier(supplier, supplier_df, po_df, overview_df, supplier_col, po_col, overview_col):
-    """Display all information for a single supplier, showing its logo next to the name."""
-    # ─── Supplier header with logo ───────────────────────────────────────────────
+    # 2) now filter by that real column
+    df = shortcode_df.loc[
+        shortcode_df[code_sup_col] == supplier,
+        [
+            "Product Name", "Product ID", "Supplier Family",
+            "Code Date", "Inventory", "Daily Rate of Sales",
+            "Days on Hand", "Shelf Life Remaining",
+            "Shelf Life Days", "Expiration Date", "Receive Date",
+        ]
+    ].copy()
+
+    if df.empty:
+        st.info("No short‐code data for this supplier.")
+        return
+
+    # 3) format your dates
+    for dt in ("Code Date", "Expiration Date", "Receive Date"):
+        if dt in df:
+            df[dt] = (
+                pd.to_datetime(df[dt], errors="coerce")
+                  .dt.strftime("%m/%d/%Y")
+            )
+    st.subheader("Short Code Data")
+    st.dataframe(df, use_container_width=True)
+
+def display_supplier(
+    supplier: str,
+    supplier_df: pd.DataFrame,
+    po_df: pd.DataFrame,
+    overview_df: pd.DataFrame,
+    supplier_col: str,
+    po_col: str,
+    overview_col: str,
+    shortcode_df: pd.DataFrame):
+    
+    """Display all information for a single supplier, with four full-width sections under Details."""
+    # ─── Header with logo + select checkbox ─────────────────────────
     col1, col2 = st.columns([1, 10])
     with col1:
         selected = st.checkbox("", key=f"select_{supplier}", value=False)
     with col2:
-        # Attempt to pull the logo URL from the "Logos" column
         logo_url = None
         if "Logos" in supplier_df.columns:
             logos = (
                 supplier_df.loc[supplier_df[supplier_col] == supplier, "Logos"]
-                .dropna()
-                .astype(str)
+                .dropna().astype(str)
             )
             if not logos.empty:
                 logo_url = logos.iloc[0].strip()
-
-        # Render the image with fixed width, or fallback emoji
         if logo_url:
             st.markdown(
                 f"""
                 <div style="display: flex; align-items: center;">
                   <img src="{logo_url}" alt="{supplier} logo"
-                       style="
-                         width: {72}px;
-                         height: auto;
-                         object-fit: contain;
-                         margin-right: 8px;
-                       " />
+                       style="width:72px; height:auto; margin-right:8px;" />
                   <span style="font-size:26px; font-weight:600;">{supplier}</span>
                 </div>
                 """,
                 unsafe_allow_html=True
             )
         else:
-            st.markdown(
-                f"<h3 style='font-size:26px;'>🏬 {supplier}</h3>",
-                unsafe_allow_html=True
-            )
+            st.markdown(f"<h3 style='font-size:26px;'>🏬 {supplier}</h3>",
+                        unsafe_allow_html=True)
 
-    # Store selection
+    # track selection
     st.session_state.setdefault("selected_suppliers", {})[supplier] = selected
     if not selected:
         return None, None, None, None
 
-    # Minimum order progress
+    # ─── Minimum order progress ────────────────────────────────────
     min_order_pct = display_min_order_progress(supplier_df, supplier_col, supplier)
 
-    # Details expander
-    with st.expander("Details", expanded=False):
-        colA, colB = st.columns([3, 2])
-        with colA:
-            display_overview_and_builder(supplier, overview_df, overview_col)
-        with colB:
-            po_count, po_numbers = display_po_and_shipments(
-                supplier, po_df, po_col, overview_df, overview_col
-            )
+    # prepare defaults for PO info
+    po_count, po_numbers = 0, []
 
-    # Prepare return data
+    # ─── Details expander ──────────────────────────────────────────
+    with st.expander("Details", expanded=False):
+        # Overview & Order Builder (full-width)
+        display_overview_and_builder(supplier, overview_df, overview_col)
+
+        # POs, Shipments & Notes (full-width) and capture outputs
+        po_count, po_numbers = display_po_and_shipments(
+            supplier, po_df, po_col, overview_df, overview_col
+        )
+
+        # Short Code Data (full-width)
+        with st.expander("Short Code Data", expanded=False):
+            display_shortcode(supplier, shortcode_df)
+
+    # ─── Build metrics for summary/export ─────────────────────────
     overview_data = st.session_state.get(f"{supplier}_overview", pd.DataFrame())
     items_under_10 = (
-        overview_data[overview_data["Days of Inventory"] < 10].shape[0]
+        (overview_data["Days of Inventory"] < 10).sum()
         if not overview_data.empty else 0
     )
     oos_risks = (
@@ -597,6 +708,7 @@ def display_supplier(supplier, supplier_df, po_df, overview_df, supplier_col, po
         if not overview_data.empty else []
     )
 
+    # return tuple for summary and export
     return min_order_pct, items_under_10, oos_risks, (po_count, po_numbers)
 
 def _export_report_to_excel_bytes(
@@ -1070,8 +1182,16 @@ def display_export_section():
 
 TITLE_LOGO_URL = "https://media.glassdoor.com/sqll/6024123/silver-eagle-beverages-squarelogo-1646829838016.png"
 
+def login():
+    pw = st.text_input("🔒 Enter password", type="password")
+    if st.button("Login"):
+        if pw in VALID_PASSWORDS:
+            st.session_state.authenticated = True
+        else:
+            st.error("❌ Incorrect password")
+
 def main():
-    # ─── Top-of-page header with logo ──────────────────────────────
+    # ─── Top-of-page header ──────────────────────────────────────
     header_html = f"""
     <div style="display: flex; align-items: center; margin-bottom: 16px;">
       <img
@@ -1079,18 +1199,29 @@ def main():
         alt="Silver Eagle Beverages Logo"
         style="width:64px; height:auto; margin-right:12px;"
       />
-      <h1 style="margin:0; font-size:2rem;">SEB Supplier Overview</h1>
+      <h1 style="margin:0; font-size:2rem;">SEB MIR Overview</h1>
     </div>
     """
     st.markdown(header_html, unsafe_allow_html=True)
 
-    # ─── File uploader ────────────────────────────────────────────
-    uploaded_file = st.file_uploader("Upload 'Master Incoming Report.xlsm'", type=["xlsm","xlsx"])
-    if not uploaded_file:
-        return st.info("⬆️ Upload the Excel file to begin.")
+    # ─── Choose data source ────────────────────────────────────────
+    use_remote = st.checkbox("Load Master Incoming Report from GitHub", value=True)
+    if use_remote:
+        st.info("Fetching 'Master Incoming Report NEW.xlsm' from GitHub…")
+        file_stream = fetch_remote_file(GITHUB_RAW_URL)
+    else:
+        file_stream = st.file_uploader(
+            "Upload 'Master Incoming Report.xlsm'",
+            type=["xlsm", "xlsx"]
+        )
+        if not file_stream:
+            return st.info("⬆️ Upload the Excel file to begin.")
 
-    # ─── Load data ────────────────────────────────────────────────
-    supplier_df, po_df, overview_df = load_data(uploaded_file)
+    # ─── Load sheets ────────────────────────────────────────────────
+    supplier_df, po_df, overview_df = load_data(file_stream)
+    shortcode_df = load_shortcode_data(file_stream)
+
+    # find supplier column in main sheets
     supplier_col = find_supplier_col(supplier_df)
     po_col       = find_supplier_col(po_df)
     overview_col = find_supplier_col(overview_df) if not overview_df.empty else None
@@ -1100,7 +1231,7 @@ def main():
     if "Order Day" not in supplier_df.columns:
         return st.error("❌ 'Order Day' column not found in Supplier Info.")
 
-    # ─── Filters ──────────────────────────────────────────────────
+    # ─── Filters ────────────────────────────────────────────────────
     supplier_df["Order Day"] = (
         supplier_df["Order Day"]
         .astype(str)
@@ -1118,16 +1249,16 @@ def main():
         managers = ["All"] + sorted(supplier_df["Brand Manager"].dropna().unique())
         selected_manager = st.selectbox("Filter by Brand Manager", managers, index=0)
 
+    # apply filters
     filtered = supplier_df[supplier_df[supplier_col] != "Anheuser Busch"]
     if selected_day != "Any Day":
         filtered = filtered[filtered["Order Day"] == selected_day]
     if selected_manager != "All":
         filtered = filtered[filtered["Brand Manager"] == selected_manager]
-
     if filtered.empty:
         return st.warning("No suppliers match current filters.")
 
-    # ─── Build Order Day map ───────────────────────────────────────
+    # build order-day map
     supplier_order_day_map = dict(
         zip(
             supplier_df[supplier_col],
@@ -1136,11 +1267,10 @@ def main():
     )
 
     st.subheader("Suppliers")
-
-    # ─── Initialize report_data ───────────────────────────────────
     if "report_data" not in st.session_state:
         st.session_state.report_data = {}
 
+    # display each supplier
     for supplier in sorted(filtered[supplier_col].unique()):
         result = display_supplier(
             supplier,
@@ -1149,15 +1279,17 @@ def main():
             overview_df,
             supplier_col,
             po_col,
-            overview_col
+            overview_col,
+            shortcode_df
         )
         if st.session_state.get("selected_suppliers", {}).get(supplier):
+            # store for exports and summaries
             st.session_state.report_data[supplier] = result
 
-    # ─── Export to PO CSV ───────────────────────────────────────
+    # ─── Export controls ───────────────────────────────────────────
     display_export_section()
 
-    # ─── ChatGPT Summary Button ─────────────────────────────────
+    # ─── Procurement Assistant ─────────────────────────────────────
     if st.button("🙋🏻 Procurement Assistant", use_container_width=True):
         if not st.session_state.report_data:
             st.warning("Please select at least one supplier to generate a summary.")
@@ -1172,12 +1304,11 @@ def main():
                 mime="text/plain"
             )
 
-    # ─── Export DSR to Excel (with logos) ─────────────────────────
+    # ─── DSR Excel Export ──────────────────────────────────────────
     if st.button("💽 Export DSR to Excel", use_container_width=True):
         if not st.session_state.report_data:
             st.warning("Please select at least one supplier to export.")
         else:
-            # Build maps
             supplier_logo_urls = dict(
                 zip(
                     supplier_df[supplier_col],
@@ -1190,17 +1321,15 @@ def main():
                     supplier_df["Brand Manager"]
                 )
             )
-
-            # Generate Excel bytes with Order Day as DUE
             excel_bytes = _export_report_to_excel_bytes(
-                st.session_state.report_data,  # supplier_data
-                overview_df,                   # overview_df
-                overview_col,                  # overview_col
-                supplier_logo_urls,            # supplier_logo_urls
-                supplier_manager_map,          # supplier_manager_map
-                supplier_order_day_map,        # supplier_order_day_map
-                po_df,                         # po_df
-                po_col                         # po_col
+                st.session_state.report_data,
+                overview_df,
+                overview_col,
+                supplier_logo_urls,
+                supplier_manager_map,
+                supplier_order_day_map,
+                po_df,
+                po_col
             )
             st.download_button(
                 label="💽 Download DSR Excel Report",
